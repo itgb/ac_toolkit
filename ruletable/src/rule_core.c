@@ -1,3 +1,7 @@
+/*
+	Implementing core functions of the tool.
+*/
+
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -7,7 +11,9 @@
 #include "audit_control.h"
 #include "rule_entry.h"
 #include "json_utility.h"
+#include "rule_ipc.h"
 
+/*mantain config*/
 struct ac_global_config {
 	struct ac_config *control;
 	struct ac_config *audit;
@@ -50,6 +56,9 @@ static void free_global_config()
 }
 
 
+/*
+	Parse json string to c data structure, and then store them in global config
+*/
 int do_parse_config(const char *json_str, unsigned int size)
 {
 	int ret = -1;
@@ -133,12 +142,124 @@ out:
 }
 
 
-int main(int argc, char **argv)
+/*commit config to kernel*/
+int do_commit_config(const char *config_str, unsigned int len) 
 {
-	if (do_parse_config(argv[1], strlen(argv[1])) != 0) {
+	int ret = -1;
+	if (config_str == NULL || len <= 0) {
 		return -1;
 	}
-	struct ac_table_info *table = generate_ac_table(&s_config.control->rule);
+	if (do_parse_config(config_str, len) != 0) {
+		AC_ERROR("do_parse_config failed\n");
+		return -1;
+	}
+
+	if (s_config.control->rule.updated) {
+		struct ac_table_info *table_info = generate_ac_table(&s_config.control->rule);
+		display_ac_table(table_info);
+		if (table_info) {
+			if (do_rule_ipc_set(AC_SO_SET_REPLACE_CONTROL, table_info, table_info->size) != 0) {
+				goto out;
+			}
+		}
+	}
+
+	if (s_config.control->set.updated) {
+		struct ac_set_info *set_info = generate_ac_set(&s_config.control->set);
+		if (set_info) {
+			if (do_rule_ipc_set(AC_SO_SET_REPLACE_CONTROL_SET, set_info, set_info->size) != 0) {
+				goto out;
+			}
+		}	
+	}
+
+	if (s_config.audit->rule.updated) {
+		struct ac_table_info *table_info = generate_ac_table(&s_config.audit->rule);
+		if (table_info) {
+			if (do_rule_ipc_set(AC_SO_SET_REPLACE_AUDIT, table_info, table_info->size) != 0) {
+				goto out;
+			}
+		}
+	}
+
+	if (s_config.audit->set.updated) {
+		struct ac_set_info *set_info = generate_ac_set(&s_config.audit->set);
+		if (set_info) {
+			if (do_rule_ipc_set(AC_SO_SET_REPLACE_AUDIT_SET, set_info, set_info->size) != 0) {
+				goto out;
+			}
+		}
+	}
+
+	ret = 0;
+out:
 	free_global_config();
+	return ret;
+}
+
+
+/*fetch_config and display.
+there are four parts config  totally.
+
+#define AC_SO_GET_CONTROL_INFO			(AC_SO_BASE_CTL)
+#define AC_SO_GET_CONTROL_SET_INFO		(AC_SO_BASE_CTL + 1)
+#define AC_SO_GET_CONTROL_ENTRIES		(AC_SO_BASE_CTL	+ 2)
+#define AC_SO_GET_CONTROL_SETS			(AC_SO_BASE_CTL + 3)
+#define AC_SO_GET_AUDIT_INFO			(AC_SO_BASE_CTL + 4)
+#define AC_SO_GET_AUDIT_SET_INFO		(AC_SO_BASE_CTL + 5)
+#define AC_SO_GET_AUDIT_ENTRIES			(AC_SO_BASE_CTL + 6)
+#define AC_SO_GET_AUDIT_SETS			(AC_SO_BASE_CTL + 7)
+*/
+
+static int sock_table_cmd[RULE_TYPE_MAX][RULE_TYPE_MAX] = {
+	AC_SO_GET_CONTROL_INFO, 
+	AC_SO_GET_CONTROL_ENTRIES,
+	
+	AC_SO_GET_AUDIT_INFO, 
+	AC_SO_GET_AUDIT_ENTRIES
+};
+
+
+static int sock_set_cmd[RULE_TYPE_MAX][RULE_TYPE_MAX] = {
+	AC_SO_GET_CONTROL_SET_INFO, 
+	AC_SO_GET_CONTROL_SETS,
+
+	AC_SO_GET_AUDIT_SET_INFO, 
+	AC_SO_GET_AUDIT_SETS
+};
+
+
+/*
+	Fetch config from kernel and print it
+*/
+int do_fetch_config()
+{
+	int i = 0;
+	struct ac_table_info *table = NULL;
+	struct ac_set_info *sets = NULL;
+
+	for (i = 0; i < RULE_TYPE_MAX; ++i) {
+		table = fetch_ac_table(sock_table_cmd[i][0], sock_table_cmd[i][1]);
+		if (table == NULL) {
+			break;
+		}
+		display_ac_table(table);
+		free(table);
+		table = NULL;
+
+		sets = fetch_ac_set(sock_set_cmd[i][0], sock_set_cmd[i][1]);
+		if (sets == NULL) {
+			break;
+		}
+
+		display_ac_set(sets);
+		free(sets);
+		sets = NULL;
+
+	}
+
+	if (i < RULE_TYPE_MAX) {
+		return -1;
+	}
 	return 0;
 }

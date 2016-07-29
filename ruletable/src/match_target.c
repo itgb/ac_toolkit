@@ -23,18 +23,20 @@ static char target_flag_map[AC_ACTION_MAX] = {
 void display_ac_flow_match(const struct ac_flow_match *flow_match) 
 {
 	int idx_offset = 0;
+	AC_FLOWID_DATA_TYPE *base = NULL;
+
 	if (flow_match == NULL) {
 		AC_ERROR("invalid parameter: flow_match is NULL\n");
 		return;
 	}
 	AC_DEBUG("---------FLOW_MATCH START---------\n");
 	AC_PRINT("Total size of match:%d\n", flow_match->match_size);
-
+	base = (AC_FLOWID_DATA_TYPE*)flow_match->elems;
 	for (int i = 0; i < AC_FLOW_TYPE_MAX; ++i) {
 		AC_PRINT("Number of %s is %d:[", flow_match_map[i], flow_match->number[i]);
 
 		for (int j = 0; j < flow_match->number[i]; ++j) {
-				AC_PRINT("%d, ", flow_match->elems[idx_offset + j]);
+			AC_PRINT("%d, ", *(base + idx_offset + j));
 		}
 		AC_PRINT("]\n");
 		idx_offset += flow_match->number[i];
@@ -50,7 +52,8 @@ struct ac_flow_match* generate_flow_match(
 	unsigned int *dst_ipgrp_ids, unsigned int dst_ipgrp_num)
 {
 	struct ac_flow_match *flow_match = NULL;
-	int elems_num = 0, match_size = 0, idx_offset = 0;
+	int elems_num = 0, match_size = 0, idx_offset = 0, elem_size = 0;
+	AC_FLOWID_DATA_TYPE *base = NULL;
 
 	if (src_zone_ids == NULL || src_zone_num == 0 ||
 		src_ipgrp_ids == NULL || src_ipgrp_num == 0 ||
@@ -59,9 +62,10 @@ struct ac_flow_match* generate_flow_match(
 		AC_ERROR("invalid parameters\n");
 		return NULL;
 	}
-
+	
+	elem_size = sizeof(AC_FLOWID_DATA_TYPE);
 	elems_num = src_zone_num + src_ipgrp_num + dst_zone_num + dst_ipgrp_num;
-	match_size = elems_num * sizeof(u_int16_t) + sizeof(struct ac_flow_match);
+	match_size = elems_num * elem_size + AC_ALIGN(sizeof(struct ac_flow_match));
 	flow_match = (struct ac_flow_match*)malloc(match_size);
 	if (flow_match == NULL) {
 		AC_ERROR("Out of memory\n");
@@ -73,6 +77,8 @@ struct ac_flow_match* generate_flow_match(
 	flow_match->number[AC_FLOW_TYPE_SRCIPGRPID] = src_ipgrp_num;
 	flow_match->number[AC_FLOW_TYPE_DSTZONEID] = dst_zone_num;
 	flow_match->number[AC_FLOW_TYPE_DSTIPGRPID] = dst_ipgrp_num;
+	base = flow_match->elems;
+
 	for (int i = 0; i < AC_FLOW_TYPE_MAX; ++i) {
 		unsigned int *ids = NULL;
 		switch(i) {
@@ -99,7 +105,7 @@ struct ac_flow_match* generate_flow_match(
 		}
 
 		for (int j = 0; ids && j < flow_match->number[i]; ++j) {
-			flow_match->elems[idx_offset + j] = ids[j];
+			*(base + idx_offset + j) = (AC_FLOWID_DATA_TYPE)ids[j];
 		}
 		idx_offset += flow_match->number[i];
 	}
@@ -110,6 +116,7 @@ struct ac_flow_match* generate_flow_match(
 void display_ac_proto_match(const struct ac_proto_match* proto_match) 
 {
 	#define IDS_NUM_PER_ROW 6
+	AC_PROTOID_DATA_TYPE *base = NULL;
 	if (proto_match == NULL) {
 		AC_ERROR("invalid parameter: proto_match is NULL\n");
 		return;
@@ -117,9 +124,9 @@ void display_ac_proto_match(const struct ac_proto_match* proto_match)
 	AC_DEBUG("---------PROTO_MATCH START---------\n");
 	AC_PRINT("The total size of match:%d\n", proto_match->match_size);
 	AC_PRINT("Number of ids is %d:[", proto_match->number);
-
+	base = (AC_PROTOID_DATA_TYPE*)proto_match->elems;
 	for (int i = 0; i < proto_match->number; ++i) {
-		AC_PRINT("%d, ", proto_match->elems[i]);
+		AC_PRINT("%d, ", *(base + i));
 		if (i && (i % IDS_NUM_PER_ROW) == 0) {
 			AC_PRINT("\n");
 		}
@@ -135,14 +142,16 @@ struct ac_proto_match* generate_proto_match(
 	unsigned int *proto_ids, 
 	unsigned int proto_num)
 {
-	struct ac_proto_match *proto_match = NULL;
 	int match_size = 0;
+	AC_PROTOID_DATA_TYPE *base = NULL;
+	struct ac_proto_match *proto_match = NULL;
+
 	if (proto_ids == NULL || proto_num == 0) {
 		AC_ERROR("invalid parameters\n");
 		return NULL;
 	}
 
-	match_size = proto_num * sizeof(u_int16_t) + sizeof(struct ac_proto_match);
+	match_size = proto_num * sizeof(AC_PROTOID_DATA_TYPE) + AC_ALIGN(sizeof(struct ac_proto_match));
 	proto_match = (struct ac_proto_match*)malloc(match_size);
 	if (proto_match == NULL) {
 		AC_ERROR("Out of memory\n");
@@ -153,8 +162,10 @@ struct ac_proto_match* generate_proto_match(
 	proto_match->number = proto_num;
 	proto_match->match_size = match_size;
 	proto_match->protoid_sort = AC_PROTOID_SORT_ASC; /*fixme: we assume it sorted in asc*/
+	base = (AC_PROTOID_DATA_TYPE*)proto_match->elems;
+
 	for (int i = 0; i < proto_match->number; ++i) {
-		proto_match->elems[i] = proto_ids[i];
+		*(base + i)= (AC_PROTOID_DATA_TYPE)proto_ids[i];
 	}
 	return proto_match;
 }
@@ -183,18 +194,19 @@ void display_ac_target(const struct ac_target *target)
 struct ac_target *generate_target(const char *action[], unsigned int action_num)
 {
 	struct ac_target *target = NULL;
-	unsigned int flags = 0;
+	unsigned int flags = 0, size = 0;
 	if (action == NULL || action_num == 0) {
 		AC_ERROR("invalid parameters\n");
 		return NULL;
 	} 
-	
-	target = (struct ac_target*)malloc(sizeof(struct ac_target));
+	size = AC_ALIGN(sizeof(struct ac_target));
+	target = (struct ac_target*)malloc(size);
 	if (target == NULL) {
 		AC_ERROR("Out of memory\n");
 		return NULL;
 	}
 	bzero(target, sizeof(struct ac_target));
+	target->size = size;
 	for (int i = 0; i < action_num; ++i) {
 		for (int j = 0; j < AC_ACTION_MAX; ++j) {
 			if (strcasecmp(action[i], target_map[j]) == 0) {
